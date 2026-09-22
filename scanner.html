@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Máy Scan</title>
+<style>
+  :root{
+    --paper:#eef1f0; --ink:#132a2a; --line:#c7d2cf; --card:#ffffff;
+    --led:#0f766e; --led-bright:#14b8a6; --danger:#b3401f; --muted:#5b6b68;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  html{scroll-padding-top:env(safe-area-inset-top,0px);}
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){ --paper:#0e1513; --ink:#e7efec; --line:#283733; --card:#151f1c; --muted:#8fa29d; }
+  }
+  :root[data-theme="dark"]{ --paper:#0e1513; --ink:#e7efec; --line:#283733; --card:#151f1c; --muted:#8fa29d; }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; min-height:100%;
+  }
+  header{
+    padding:18px 20px 14px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  }
+  header h1{ font-size:19px; margin:0; letter-spacing:-.01em; }
+  header .dot{ width:8px; height:8px; border-radius:50%; background:var(--led-bright); box-shadow:0 0 8px var(--led-bright); display:inline-block; margin-right:8px; }
+  header .count{ font-size:13px; color:var(--muted); }
+  main{ flex:1; padding:16px; max-width:640px; width:100%; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
+
+  .viewfinder{ position:relative; background:#000; border-radius:14px; overflow:hidden; aspect-ratio:3/4; }
+  video{ width:100%; height:100%; object-fit:cover; display:block; }
+  .frame{ position:absolute; inset:14px; border:2px dashed rgba(255,255,255,.35); border-radius:8px; pointer-events:none; }
+  canvas{ display:none; }
+
+  .controls{ display:flex; gap:10px; }
+  button{
+    font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink);
+    padding:12px 14px; border-radius:10px; cursor:pointer; font-size:14px;
+  }
+  button:active{ transform:scale(.98); }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  .shoot{
+    flex:1; background:var(--led); color:#fff; border-color:var(--led); font-weight:600;
+    padding:14px; font-size:15px;
+  }
+  .shoot:active{ background:var(--led-bright); }
+  .ghost{ background:transparent; }
+
+  .pages{ display:flex; gap:10px; overflow-x:auto; padding:2px 2px 8px; }
+  .page{ position:relative; flex:0 0 auto; width:70px; }
+  .page img{ width:70px; height:93px; object-fit:cover; border-radius:6px; border:1px solid var(--line); display:block; }
+  .page .n{ position:absolute; top:3px; left:4px; font-size:10px; background:rgba(0,0,0,.55); color:#fff; padding:1px 5px; border-radius:5px; }
+  .page .rm{ position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; background:var(--danger); color:#fff; border:none; font-size:12px; line-height:20px; padding:0; }
+  .empty{ color:var(--muted); font-size:13px; padding:10px 2px; }
+
+  .actions{ display:flex; gap:10px; }
+  .actions button{ flex:1; }
+  .primary{ background:var(--ink); color:var(--paper); border-color:var(--ink); font-weight:600; }
+
+  details{ border:1px solid var(--line); border-radius:10px; padding:10px 14px; background:var(--card); }
+  summary{ cursor:pointer; font-size:13px; color:var(--muted); }
+  .field{ margin-top:10px; display:flex; flex-direction:column; gap:6px; }
+  .field label{ font-size:12px; color:var(--muted); }
+  .field input{
+    font:inherit; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--paper); color:var(--ink);
+  }
+  .hint{ font-size:12px; color:var(--muted); line-height:1.5; }
+  .status{ font-size:13px; min-height:18px; }
+  .status.ok{ color:var(--led); }
+  .status.err{ color:var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span>Máy Scan</h1>
+  <span class="count" id="count">0 trang</span>
+</header>
+
+<main>
+  <div class="viewfinder">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="frame"></div>
+  </div>
+  <canvas id="canvas"></canvas>
+
+  <div class="controls">
+    <button class="ghost" id="switchCam" title="Đổi camera">Đổi camera</button>
+    <button class="shoot" id="shoot">Chụp trang</button>
+  </div>
+
+  <div>
+    <div class="pages" id="pages"><span class="empty">Chưa có trang nào — chụp ảnh để bắt đầu.</span></div>
+  </div>
+
+  <div class="actions">
+    <button id="downloadPdf" disabled>Tải PDF xuống</button>
+    <button class="primary" id="saveSheet" disabled>Lưu vào Google Sheet</button>
+  </div>
+  <div class="status" id="status"></div>
+
+  <details>
+    <summary>Thiết lập Google Sheet / Drive</summary>
+    <div class="field">
+      <label for="scriptUrl">URL Apps Script Web App</label>
+      <input id="scriptUrl" type="text" placeholder="https://script.google.com/macros/s/AKfycb.../exec" autocapitalize="off" autocorrect="off">
+    </div>
+    <div class="field">
+      <label for="fileName">Tên file PDF</label>
+      <input id="fileName" type="text" placeholder="scan-2026-09-22">
+    </div>
+    <p class="hint">
+      Google Sheet không lưu được file trực tiếp, nên trang này gửi PDF tới một Google Apps Script
+      do bạn triển khai: script sẽ lưu file PDF vào Google Drive và ghi một dòng (tên file, thời gian, link Drive)
+      vào Google Sheet. Đoạn code Apps Script và hướng dẫn triển khai nằm trong phần trả lời bên dưới.
+    </p>
+  </details>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+(function(){
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const pagesEl = document.getElementById('pages');
+  const countEl = document.getElementById('count');
+  const statusEl = document.getElementById('status');
+  const shoot = document.getElementById('shoot');
+  const switchCam = document.getElementById('switchCam');
+  const downloadBtn = document.getElementById('downloadPdf');
+  const saveBtn = document.getElementById('saveSheet');
+  const scriptUrlInput = document.getElementById('scriptUrl');
+  const fileNameInput = document.getElementById('fileName');
+
+  let pages = []; // dataURLs
+  let facing = 'environment';
+  let stream = null;
+
+  try {
+    const savedUrl = localStorage.getItem('scanner_script_url');
+    if (savedUrl) scriptUrlInput.value = savedUrl;
+  } catch(e){}
+  scriptUrlInput.addEventListener('change', () => {
+    try { localStorage.setItem('scanner_script_url', scriptUrlInput.value.trim()); } catch(e){}
+  });
+
+  const defaultName = () => {
+    const d = new Date();
+    const p = n => String(n).padStart(2,'0');
+    return `scan-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  };
+  fileNameInput.value = defaultName();
+
+  async function startCamera(){
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width:{ideal:1600}, height:{ideal:2000} },
+        audio: false
+      });
+      video.srcObject = stream;
+    } catch(err){
+      setStatus('Không mở được camera: ' + err.message, 'err');
+    }
+  }
+  startCamera();
+
+  switchCam.addEventListener('click', () => {
+    facing = facing === 'environment' ? 'user' : 'environment';
+    startCamera();
+  });
+
+  function setStatus(msg, kind){
+    statusEl.textContent = msg || '';
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function render(){
+    countEl.textContent = pages.length + ' trang';
+    downloadBtn.disabled = pages.length === 0;
+    saveBtn.disabled = pages.length === 0;
+    if (pages.length === 0){
+      pagesEl.innerHTML = '<span class="empty">Chưa có trang nào — chụp ảnh để bắt đầu.</span>';
+      return;
+    }
+    pagesEl.innerHTML = '';
+    pages.forEach((src, i) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'page';
+      wrap.innerHTML = `<span class="n">${i+1}</span><img src="${src}"><button class="rm" data-i="${i}">×</button>`;
+      pagesEl.appendChild(wrap);
+    });
+    pagesEl.querySelectorAll('.rm').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pages.splice(Number(btn.dataset.i), 1);
+        render();
+      });
+    });
+    pagesEl.scrollLeft = pagesEl.scrollWidth;
+  }
+
+  shoot.addEventListener('click', () => {
+    if (!video.videoWidth) { setStatus('Camera chưa sẵn sàng.', 'err'); return; }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    pages.push(canvas.toDataURL('image/jpeg', 0.92));
+    setStatus('');
+    render();
+  });
+
+  function buildPdf(){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'pt', format:'a4' });
+    const pw = doc.internal.pageSize.getWidth();
+    const ph = doc.internal.pageSize.getHeight();
+    pages.forEach((src, i) => {
+      if (i > 0) doc.addPage();
+      const img = new Image();
+      img.src = src;
+      const ratio = Math.min(pw / canvas.width, ph / canvas.height);
+      // use natural size ratio per-image via temp canvas dims stored at capture time is skipped for simplicity;
+      // fall back to fitting each image using its own aspect ratio read synchronously from dataURL header is not possible,
+      // so we fit to page width and center vertically using image aspect from a probe canvas.
+    });
+    return doc;
+  }
+
+  // Build PDF properly using image natural sizes (async decode).
+  async function buildPdfAsync(){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'pt', format:'a4' });
+    const pw = doc.internal.pageSize.getWidth();
+    const ph = doc.internal.pageSize.getHeight();
+    for (let i = 0; i < pages.length; i++){
+      const src = pages[i];
+      const dims = await new Promise((res) => {
+        const im = new Image();
+        im.onload = () => res({ w: im.width, h: im.height });
+        im.src = src;
+      });
+      const scale = Math.min(pw / dims.w, ph / dims.h);
+      const w = dims.w * scale, h = dims.h * scale;
+      const x = (pw - w) / 2, y = (ph - h) / 2;
+      if (i > 0) doc.addPage();
+      doc.addImage(src, 'JPEG', x, y, w, h);
+    }
+    return doc;
+  }
+
+  downloadBtn.addEventListener('click', async () => {
+    setStatus('Đang tạo PDF...');
+    const doc = await buildPdfAsync();
+    const name = (fileNameInput.value.trim() || defaultName()) + '.pdf';
+    doc.save(name);
+    setStatus('Đã tải ' + name, 'ok');
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const url = scriptUrlInput.value.trim();
+    if (!url){
+      setStatus('Nhập URL Apps Script trong phần Thiết lập trước đã.', 'err');
+      return;
+    }
+    setStatus('Đang tạo PDF và gửi lên Google Sheet...');
+    saveBtn.disabled = true;
+    try {
+      const doc = await buildPdfAsync();
+      const base64 = doc.output('datauristring').split(',')[1];
+      const name = (fileNameInput.value.trim() || defaultName()) + '.pdf';
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ fileName: name, pdfBase64: base64, pageCount: pages.length })
+      });
+      const text = await res.text();
+      let ok = res.ok;
+      try { const j = JSON.parse(text); ok = ok && j.status !== 'error'; } catch(e){}
+      setStatus(ok ? 'Đã lưu "' + name + '" vào Google Sheet / Drive.' : 'Script phản hồi lỗi: ' + text.slice(0,120), ok ? 'ok' : 'err');
+    } catch(err){
+      setStatus('Gửi thất bại: ' + err.message, 'err');
+    } finally {
+      saveBtn.disabled = pages.length === 0;
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
