@@ -34,8 +34,11 @@
 
   .viewfinder{ position:relative; background:#000; border-radius:14px; overflow:hidden; aspect-ratio:3/4; }
   video{ width:100%; height:100%; object-fit:cover; display:block; }
-  .frame{ position:absolute; inset:14px; border:2px dashed rgba(255,255,255,.35); border-radius:8px; pointer-events:none; }
+  #guide{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .frameStatus{ font-size:12px; color:var(--muted); text-align:center; margin-top:-6px; }
+  .frameStatus.found{ color:var(--led-bright); }
   canvas{ display:none; }
+  #guide{ display:block; }
 
   .controls{ display:flex; gap:10px; }
   button{
@@ -84,8 +87,9 @@
 <main>
   <div class="viewfinder">
     <video id="video" autoplay playsinline muted></video>
-    <div class="frame"></div>
+    <canvas id="guide"></canvas>
   </div>
+  <div class="frameStatus" id="frameStatus">Đang tìm khung tài liệu…</div>
   <canvas id="canvas"></canvas>
 
   <div class="controls">
@@ -135,6 +139,11 @@
   const saveBtn = document.getElementById('saveSheet');
   const scriptUrlInput = document.getElementById('scriptUrl');
   const fileNameInput = document.getElementById('fileName');
+  const guideCanvas = document.getElementById('guide');
+  const gctx = guideCanvas.getContext('2d');
+  const frameStatusEl = document.getElementById('frameStatus');
+  const detectCanvas = document.createElement('canvas');
+  const dctx = detectCanvas.getContext('2d', { willReadFrequently: true });
 
   let pages = []; // dataURLs
   let facing = 'environment';
@@ -157,6 +166,106 @@
   };
   fileNameInput.value = defaultName();
 
+  function resizeGuide(){
+    guideCanvas.width = video.clientWidth;
+    guideCanvas.height = video.clientHeight;
+  }
+  window.addEventListener('resize', resizeGuide);
+  video.addEventListener('loadedmetadata', resizeGuide);
+
+  function coverCrop(vw, vh, cw, ch){
+    const vA = vw / vh, cA = cw / ch;
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (vA > cA){ sw = vh * cA; sx = (vw - sw) / 2; }
+    else { sh = vw / cA; sy = (vh - sh) / 2; }
+    return { sx, sy, sw, sh };
+  }
+
+  // Lightweight document-edge detection: downsamples the visible frame,
+  // finds strong gradient bands via row/column projections, and draws the
+  // detected rectangle as a live guide (not a perspective correction).
+  function detectFrame(){
+    if (!video.videoWidth || !guideCanvas.width || !guideCanvas.height) return;
+    const dw = 160, dh = Math.round(dw * guideCanvas.height / guideCanvas.width) || 213;
+    const crop = coverCrop(video.videoWidth, video.videoHeight, guideCanvas.width, guideCanvas.height);
+    detectCanvas.width = dw; detectCanvas.height = dh;
+    dctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, dw, dh);
+    let img;
+    try { img = dctx.getImageData(0, 0, dw, dh); } catch(e){ return; }
+    const d = img.data;
+    const gray = new Float32Array(dw * dh);
+    for (let i = 0, p = 0; i < d.length; i += 4, p++){
+      gray[p] = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+    }
+    const mags = new Float32Array(dw * dh);
+    let maxMag = 1;
+    for (let y = 1; y < dh - 1; y++){
+      for (let x = 1; x < dw - 1; x++){
+        const idx = y * dw + x;
+        const gx = gray[idx+1] - gray[idx-1];
+        const gy = gray[idx+dw] - gray[idx-dw];
+        const mag = Math.abs(gx) + Math.abs(gy);
+        mags[idx] = mag;
+        if (mag > maxMag) maxMag = mag;
+      }
+    }
+    const threshold = maxMag * 0.3;
+    const colSum = new Float32Array(dw);
+    const rowSum = new Float32Array(dh);
+    for (let y = 1; y < dh - 1; y++){
+      for (let x = 1; x < dw - 1; x++){
+        if (mags[y * dw + x] > threshold){ colSum[x]++; rowSum[y]++; }
+      }
+    }
+    function bounds(arr){
+      let m = 0;
+      for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+      const t = m * 0.4;
+      let start = 0, end = arr.length - 1;
+      while (start < arr.length && arr[start] < t) start++;
+      while (end > 0 && arr[end] < t) end--;
+      return [start, end];
+    }
+    const [x0, x1] = bounds(colSum);
+    const [y0, y1] = bounds(rowSum);
+
+    gctx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+    const found = x0 < x1 && y0 < y1 && (x1 - x0) > dw * 0.3 && (y1 - y0) > dh * 0.3;
+    const sx = guideCanvas.width / dw, sy = guideCanvas.height / dh;
+    if (found){
+      const rx = x0 * sx, ry = y0 * sy, rw = (x1 - x0) * sx, rh = (y1 - y0) * sy;
+      gctx.setLineDash([]);
+      gctx.strokeStyle = '#14b8a6';
+      gctx.lineWidth = 3;
+      gctx.strokeRect(rx, ry, rw, rh);
+      gctx.lineWidth = 4;
+      const cl = 18;
+      [[rx, ry, 1, 1], [rx+rw, ry, -1, 1], [rx, ry+rh, 1, -1], [rx+rw, ry+rh, -1, -1]].forEach(([cx, cy, dx, dy]) => {
+        gctx.beginPath();
+        gctx.moveTo(cx, cy + cl * dy);
+        gctx.lineTo(cx, cy);
+        gctx.lineTo(cx + cl * dx, cy);
+        gctx.stroke();
+      });
+      frameStatusEl.textContent = 'Đã thấy khung tài liệu';
+      frameStatusEl.className = 'frameStatus found';
+    } else {
+      gctx.setLineDash([6, 6]);
+      gctx.strokeStyle = 'rgba(255,255,255,.35)';
+      gctx.lineWidth = 2;
+      const m = 14;
+      gctx.strokeRect(m, m, guideCanvas.width - m * 2, guideCanvas.height - m * 2);
+      frameStatusEl.textContent = 'Đang tìm khung tài liệu…';
+      frameStatusEl.className = 'frameStatus';
+    }
+  }
+
+  let detectTimer = null;
+  function startDetectLoop(){
+    if (detectTimer) clearInterval(detectTimer);
+    detectTimer = setInterval(detectFrame, 220);
+  }
+
   async function startCamera(){
     if (stream) stream.getTracks().forEach(t => t.stop());
     try {
@@ -165,11 +274,13 @@
         audio: false
       });
       video.srcObject = stream;
+      resizeGuide();
     } catch(err){
       setStatus('Không mở được camera: ' + err.message, 'err');
     }
   }
   startCamera();
+  startDetectLoop();
 
   switchCam.addEventListener('click', () => {
     facing = facing === 'environment' ? 'user' : 'environment';
